@@ -1,8 +1,14 @@
 import asyncio
+import json
 import os
+import socket
 import subprocess
 import sys
+import urllib.request
 from pathlib import Path
+from urllib.parse import parse_qs, urlparse
+
+from dotenv import load_dotenv
 
 
 def ensure_proto_compiled() -> None:
@@ -15,6 +21,36 @@ def ensure_proto_compiled() -> None:
             ["protoc", "-I", "proto", "--python_out=.", "proto/douyin.proto"],
             check=True,
         )
+
+
+def normalize_live_url(raw_url: str) -> str:
+    """兼容带 live_web_rid 参数的抖音长链接，自动转换为标准短链接。"""
+    parsed = urlparse(raw_url.strip())
+    qs = parse_qs(parsed.query)
+    rid = qs.get("live_web_rid", [None])[0]
+    if rid:
+        return f"https://live.douyin.com/{rid}"
+    return raw_url.strip()
+
+
+def resolve_cdp_ws_endpoint(cdp_http_url: str) -> str:
+    """将域名解析为 IP 地址并获取 WebSocket 调试地址，满足 Chrome 仅允许 IP / localhost 的校验。"""
+    parsed = urlparse(cdp_http_url.strip())
+    host = parsed.hostname or "127.0.0.1"
+    port = parsed.port or 9222
+    host_ip = host if host == "localhost" else socket.gethostbyname(host)
+
+    if parsed.scheme in ("ws", "wss"):
+        return parsed._replace(netloc=f"{host_ip}:{port}").geturl()
+
+    version_url = f"http://{host_ip}:{port}/json/version"
+    req = urllib.request.Request(version_url, headers={"Host": f"127.0.0.1:{port}"})
+    with urllib.request.urlopen(req, timeout=5) as resp:
+        info = json.loads(resp.read().decode("utf-8"))
+
+    ws_url = info["webSocketDebuggerUrl"]
+    ws_parsed = urlparse(ws_url)
+    return ws_parsed._replace(netloc=f"{host_ip}:{port}").geturl()
 
 
 def format_console_log(msg: dict) -> str:
@@ -35,46 +71,92 @@ def format_console_log(msg: dict) -> str:
 
 
 async def run() -> None:
+    load_dotenv(override=False)
     ensure_proto_compiled()
 
     from playwright.async_api import async_playwright
+
+    from ai_assistant import AIAssistant
     from decoder import decode_frame
+    from sender import BarrageSender, inject_cookies_if_exists
     from ws_server import LocalWSServer
 
-    live_url = (
+    raw_live_url = (
         sys.argv[1]
         if len(sys.argv) > 1
         else os.getenv("LIVE_URL", "https://live.douyin.com/")
     )
+    live_url = normalize_live_url(raw_live_url)
     ws_host = os.getenv("WS_HOST", "0.0.0.0")
     ws_port = int(os.getenv("WS_PORT", "8888"))
     headless = os.getenv("HEADLESS", "true").lower() in ("1", "true", "yes")
     only_chat = os.getenv("ONLY_CHAT", "true").lower() in ("1", "true", "yes")
+    cdp_url = os.getenv("CDP_URL", "").strip()
 
-    mode_text = "仅输出弹幕 (ONLY_CHAT=true)" if only_chat else "输出全部消息 (ONLY_CHAT=false)"
+    mode_text = (
+        "仅输出弹幕 (ONLY_CHAT=true)"
+        if only_chat
+        else "输出全部消息 (ONLY_CHAT=false)"
+    )
     print(f"[Filter] 当前模式: {mode_text}")
 
+    ai_assistant = AIAssistant(knowledge_path="knowledge.txt")
     ws_server = LocalWSServer(host=ws_host, port=ws_port)
     await ws_server.start()
 
     barrage_ws_ids: set[str] = set()
 
     async with async_playwright() as p:
-        context = await p.chromium.launch_persistent_context(
-            user_data_dir="./chrome_profile",
-            headless=headless,
-            args=[
-                "--disable-blink-features=AutomationControlled",
-                "--no-sandbox",
-                "--disable-dev-shm-usage",
-            ],
-            user_agent=(
-                "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
-                "AppleWebKit/537.36 (KHTML, like Gecko) "
-                "Chrome/131.0.0.0 Safari/537.36"
-            ),
-        )
-        page = context.pages[0] if context.pages else await context.new_page()
+        remote_browser = None
+        if cdp_url:
+            try:
+                ws_endpoint = resolve_cdp_ws_endpoint(cdp_url)
+                print(f"[CDP] 正在连接宿主机可视 Chrome: {ws_endpoint}")
+                remote_browser = await p.chromium.connect_over_cdp(ws_endpoint)
+            except Exception as exc:
+                await ws_server.stop()
+                raise RuntimeError(
+                    f"无法连接 Mac Chrome ({cdp_url})，请先在 Mac 终端运行 `bash start_mac_chrome.sh` 打开独立浏览器窗口！原始错误: {exc}"
+                ) from exc
+
+            context = (
+                remote_browser.contexts[0]
+                if remote_browser.contexts
+                else await remote_browser.new_context()
+            )
+            page = await context.new_page()
+        else:
+            context = await p.chromium.launch_persistent_context(
+                user_data_dir="./chrome_profile",
+                headless=headless,
+                args=[
+                    "--disable-blink-features=AutomationControlled",
+                    "--no-sandbox",
+                    "--disable-dev-shm-usage",
+                ],
+                user_agent=(
+                    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+                    "AppleWebKit/537.36 (KHTML, like Gecko) "
+                    "Chrome/131.0.0.0 Safari/537.36"
+                ),
+            )
+            await inject_cookies_if_exists(context, cookie_path="cookies.json")
+            page = context.pages[0] if context.pages else await context.new_page()
+
+        sender = BarrageSender(page)
+
+        async def handle_ai_reply(msg: dict) -> None:
+            reply = await ai_assistant.generate_reply(
+                msg["nickname"], msg["content"]
+            )
+            if not reply:
+                return
+            if ai_assistant.dry_run:
+                print(
+                    f"[AI 演习回复] 针对「{msg['nickname']}: {msg['content']}」-> {reply}"
+                )
+            else:
+                await sender.send(reply)
 
         cdp = await context.new_cdp_session(page)
         await cdp.send("Network.enable")
@@ -98,20 +180,30 @@ async def run() -> None:
                         continue
                     print(format_console_log(msg))
                     asyncio.create_task(ws_server.broadcast(msg))
+                    if ai_assistant.enabled and msg.get("type") == "chat":
+                        asyncio.create_task(handle_ai_reply(msg))
             except Exception as exc:
                 print(f"[Decode Error] {exc}")
 
         cdp.on("Network.webSocketCreated", on_ws_created)
         cdp.on("Network.webSocketFrameReceived", on_ws_frame_received)
 
-        print(f"[Browser] 正在打开直播间 (headless={headless}): {live_url}")
+        browser_desc = "Mac 可视 Chrome (CDP)" if cdp_url else f"容器内置 Chromium (headless={headless})"
+        print(f"[Browser] 正在使用 [{browser_desc}] 打开直播间: {live_url}")
         await page.goto(live_url, wait_until="domcontentloaded", timeout=60000)
         print("[Browser] 页面已打开，正在监听弹幕流... 按 Ctrl+C 退出")
 
         try:
             await asyncio.Future()
         finally:
-            await context.close()
+            if remote_browser is not None:
+                # 仅关闭本次新建的直播间标签页，不关闭用户 Mac 上的 Chrome 主窗口
+                try:
+                    await page.close()
+                except Exception:
+                    pass
+            else:
+                await context.close()
             await ws_server.stop()
 
 
