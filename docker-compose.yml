@@ -1,0 +1,19 @@
+services:
+  douyin:
+    build: .
+    volumes:
+      - .:/app
+    ports:
+      - "8888:8888"
+    # 给 Chromium 分配足够的共享内存，防止在 Docker 中页面崩溃
+    shm_size: "1gb"
+    environment:
+      # 替换成你要抓取的抖音直播间地址
+      - LIVE_URL=${LIVE_URL:-https://live.douyin.com/}
+      # true = 只输出聊天弹幕；false = 输出全部消息（含进房/点赞/礼物/关注/在线人数）
+      - ONLY_CHAT=${ONLY_CHAT:-true}
+      - WS_HOST=0.0.0.0
+      - WS_PORT=8888
+      - HEADLESS=true
+    stdin_open: true
+    tty: true
