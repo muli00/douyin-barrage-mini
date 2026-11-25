@@ -1,14 +1,18 @@
-"""自测脚本：构造模拟的抖音 Protobuf + gzip + Base64 帧，验证解包与本地 WS 广播全链路。"""
+"""自测脚本：验证解包、本地 WS 广播、Playwright+CDP、Cookie 清洗与 AI 过滤全链路。"""
 
 import asyncio
 import base64
 import gzip
 import json
+import os
 
 import websockets
 
 import douyin_pb2
+from ai_assistant import AIAssistant
 from decoder import decode_frame
+from main import normalize_live_url
+from sender import normalize_cookies
 from ws_server import LocalWSServer
 
 
@@ -50,7 +54,7 @@ async def run_verify() -> None:
     assert len(messages) == 2, f"期望 2 条消息，实际 {len(messages)}"
     assert messages[0]["type"] == "chat" and messages[0]["content"] == "666 主播太强了"
     assert messages[1]["type"] == "gift" and messages[1]["gift_name"] == "小心心"
-    print("[PASS] 1/2 Protobuf + gzip + Base64 解包自测通过:", messages)
+    print("[PASS] 1/5 Protobuf + gzip + Base64 解包自测通过")
 
     # 2. 验证本地 WS 广播链路
     server = LocalWSServer(host="127.0.0.1", port=18888)
@@ -61,11 +65,11 @@ async def run_verify() -> None:
             await server.broadcast(messages[0])
             received = json.loads(await asyncio.wait_for(client.recv(), timeout=2.0))
             assert received == messages[0], f"广播数据不匹配: {received}"
-            print("[PASS] 2/2 本地 WebSocket 广播自测通过:", received)
+            print("[PASS] 2/5 本地 WebSocket 广播自测通过")
     finally:
         await server.stop()
 
-    # 3. 验证 Playwright Chromium + CDP 在容器内正常启动
+    # 3. 验证 Playwright Chromium + CDP 启动
     from playwright.async_api import async_playwright
 
     async with async_playwright() as p:
@@ -74,9 +78,44 @@ async def run_verify() -> None:
             page = await browser.new_page()
             cdp = await page.context.new_cdp_session(page)
             await cdp.send("Network.enable")
-            print("[PASS] 3/3 Playwright Chromium + CDP 会话启动自测通过")
+            print("[PASS] 3/5 Playwright Chromium + CDP 会话启动自测通过")
         finally:
             await browser.close()
+
+    # 4. 验证 Cookie 规范化与长链接提取
+    raw_cookies = [
+        {
+            "name": "sessionid",
+            "value": "mock_val",
+            "domain": ".douyin.com",
+            "path": "/",
+            "expirationDate": 1999999999.0,
+            "sameSite": "no_restriction",
+            "secure": False,
+        }
+    ]
+    cleaned = normalize_cookies(raw_cookies)
+    assert len(cleaned) == 1
+    assert cleaned[0]["sameSite"] == "None" and cleaned[0]["secure"] is True
+    assert cleaned[0]["expires"] == 1999999999.0
+    assert (
+        normalize_live_url("https://live.douyin.com/?anchor_id=1&live_web_rid=751561170106")
+        == "https://live.douyin.com/751561170106"
+    )
+    print("[PASS] 4/5 Cookie 规范化与长链接提取自测通过")
+
+    # 5. 验证 AI 助播规则过滤与违禁词拦截
+    os.environ["AI_ENABLED"] = "true"
+    os.environ["LLM_API_KEY"] = "sk-mock-key"
+    os.environ["BOT_NICKNAME"] = "我的助播小号"
+    os.environ["BANNED_WORDS"] = "全网第一,微信"
+    bot = AIAssistant()
+    assert bot.should_consider("我的助播小号", "多少钱") is False
+    assert bot.should_consider("路人", "1") is False
+    assert bot.should_consider("路人", "这件衣服怎么拍？") is True
+    assert bot.contains_banned_word("这是全网第一好用的") == "全网第一"
+    assert bot.contains_banned_word("点击小黄车1号链接就可以拍哦") is None
+    print("[PASS] 5/5 AI 助播防死循环过滤与违禁词拦截自测通过")
 
 
 if __name__ == "__main__":

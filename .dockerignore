@@ -1,0 +1,7 @@
+.git/
+__pycache__/
+*.pyc
+chrome_profile/
+.env
+cookies.json
+.DS_Store

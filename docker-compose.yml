@@ -15,5 +15,14 @@ services:
       - WS_HOST=0.0.0.0
       - WS_PORT=8888
       - HEADLESS=true
+      # AI 助播配置（也可写在项目根目录的 .env 文件中）
+      - AI_ENABLED=${AI_ENABLED:-false}
+      - DRY_RUN=${DRY_RUN:-true}
+      - LLM_BASE_URL=${LLM_BASE_URL:-https://api.deepseek.com}
+      - LLM_API_KEY=${LLM_API_KEY:-}
+      - LLM_MODEL=${LLM_MODEL:-deepseek-chat}
+      - BOT_NICKNAME=${BOT_NICKNAME:-}
+      - REPLY_COOLDOWN=${REPLY_COOLDOWN:-12}
+      - BANNED_WORDS=${BANNED_WORDS:-最便宜,全网第一,绝对,微信,加V,私信我}
     stdin_open: true
     tty: true

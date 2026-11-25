@@ -2,3 +2,5 @@ __pycache__/
 *.pyc
 chrome_profile/
 .DS_Store
+.env
+cookies.json
