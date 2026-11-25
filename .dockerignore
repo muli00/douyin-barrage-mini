@@ -2,6 +2,9 @@
 __pycache__/
 *.pyc
 chrome_profile/
+mac_chrome_profile/
 .env
 cookies.json
+debug_send.png
+login_qrcode.png
 .DS_Store

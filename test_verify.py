@@ -11,7 +11,7 @@ import websockets
 import douyin_pb2
 from ai_assistant import AIAssistant
 from decoder import decode_frame
-from main import normalize_live_url
+from main import normalize_live_url, resolve_cdp_ws_endpoint
 from sender import normalize_cookies
 from ws_server import LocalWSServer
 
@@ -115,7 +115,9 @@ async def run_verify() -> None:
     assert bot.should_consider("路人", "这件衣服怎么拍？") is True
     assert bot.contains_banned_word("这是全网第一好用的") == "全网第一"
     assert bot.contains_banned_word("点击小黄车1号链接就可以拍哦") is None
-    print("[PASS] 5/5 AI 助播防死循环过滤与违禁词拦截自测通过")
+    ws_ep = resolve_cdp_ws_endpoint("ws://localhost:9222/devtools/browser/abc")
+    assert ws_ep == "ws://localhost:9222/devtools/browser/abc"
+    print("[PASS] 5/5 AI 助播过滤、违禁词拦截与 CDP 地址解析自测通过")
 
 
 if __name__ == "__main__":

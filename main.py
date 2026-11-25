@@ -1,7 +1,10 @@
 import asyncio
+import json
 import os
+import socket
 import subprocess
 import sys
+import urllib.request
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
@@ -30,6 +33,26 @@ def normalize_live_url(raw_url: str) -> str:
     return raw_url.strip()
 
 
+def resolve_cdp_ws_endpoint(cdp_http_url: str) -> str:
+    """将域名解析为 IP 地址并获取 WebSocket 调试地址，满足 Chrome 仅允许 IP / localhost 的校验。"""
+    parsed = urlparse(cdp_http_url.strip())
+    host = parsed.hostname or "127.0.0.1"
+    port = parsed.port or 9222
+    host_ip = host if host == "localhost" else socket.gethostbyname(host)
+
+    if parsed.scheme in ("ws", "wss"):
+        return parsed._replace(netloc=f"{host_ip}:{port}").geturl()
+
+    version_url = f"http://{host_ip}:{port}/json/version"
+    req = urllib.request.Request(version_url, headers={"Host": f"127.0.0.1:{port}"})
+    with urllib.request.urlopen(req, timeout=5) as resp:
+        info = json.loads(resp.read().decode("utf-8"))
+
+    ws_url = info["webSocketDebuggerUrl"]
+    ws_parsed = urlparse(ws_url)
+    return ws_parsed._replace(netloc=f"{host_ip}:{port}").geturl()
+
+
 def format_console_log(msg: dict) -> str:
     msg_type = msg.get("type")
     if msg_type == "chat":
@@ -48,7 +71,6 @@ def format_console_log(msg: dict) -> str:
 
 
 async def run() -> None:
-    # 自动加载本地 .env 文件（若存在，不覆盖命令行显式传入的环境变量）
     load_dotenv(override=False)
     ensure_proto_compiled()
 
@@ -69,6 +91,7 @@ async def run() -> None:
     ws_port = int(os.getenv("WS_PORT", "8888"))
     headless = os.getenv("HEADLESS", "true").lower() in ("1", "true", "yes")
     only_chat = os.getenv("ONLY_CHAT", "true").lower() in ("1", "true", "yes")
+    cdp_url = os.getenv("CDP_URL", "").strip()
 
     mode_text = (
         "仅输出弹幕 (ONLY_CHAT=true)"
@@ -84,25 +107,42 @@ async def run() -> None:
     barrage_ws_ids: set[str] = set()
 
     async with async_playwright() as p:
-        context = await p.chromium.launch_persistent_context(
-            user_data_dir="./chrome_profile",
-            headless=headless,
-            args=[
-                "--disable-blink-features=AutomationControlled",
-                "--no-sandbox",
-                "--disable-dev-shm-usage",
-            ],
-            user_agent=(
-                "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
-                "AppleWebKit/537.36 (KHTML, like Gecko) "
-                "Chrome/131.0.0.0 Safari/537.36"
-            ),
-        )
+        remote_browser = None
+        if cdp_url:
+            try:
+                ws_endpoint = resolve_cdp_ws_endpoint(cdp_url)
+                print(f"[CDP] 正在连接宿主机可视 Chrome: {ws_endpoint}")
+                remote_browser = await p.chromium.connect_over_cdp(ws_endpoint)
+            except Exception as exc:
+                await ws_server.stop()
+                raise RuntimeError(
+                    f"无法连接 Mac Chrome ({cdp_url})，请先在 Mac 终端运行 `bash start_mac_chrome.sh` 打开独立浏览器窗口！原始错误: {exc}"
+                ) from exc
 
-        # 方法一：启动后自动注入项目根目录的 cookies.json（若存在）
-        await inject_cookies_if_exists(context, cookie_path="cookies.json")
+            context = (
+                remote_browser.contexts[0]
+                if remote_browser.contexts
+                else await remote_browser.new_context()
+            )
+            page = await context.new_page()
+        else:
+            context = await p.chromium.launch_persistent_context(
+                user_data_dir="./chrome_profile",
+                headless=headless,
+                args=[
+                    "--disable-blink-features=AutomationControlled",
+                    "--no-sandbox",
+                    "--disable-dev-shm-usage",
+                ],
+                user_agent=(
+                    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+                    "AppleWebKit/537.36 (KHTML, like Gecko) "
+                    "Chrome/131.0.0.0 Safari/537.36"
+                ),
+            )
+            await inject_cookies_if_exists(context, cookie_path="cookies.json")
+            page = context.pages[0] if context.pages else await context.new_page()
 
-        page = context.pages[0] if context.pages else await context.new_page()
         sender = BarrageSender(page)
 
         async def handle_ai_reply(msg: dict) -> None:
@@ -148,14 +188,22 @@ async def run() -> None:
         cdp.on("Network.webSocketCreated", on_ws_created)
         cdp.on("Network.webSocketFrameReceived", on_ws_frame_received)
 
-        print(f"[Browser] 正在打开直播间 (headless={headless}): {live_url}")
+        browser_desc = "Mac 可视 Chrome (CDP)" if cdp_url else f"容器内置 Chromium (headless={headless})"
+        print(f"[Browser] 正在使用 [{browser_desc}] 打开直播间: {live_url}")
         await page.goto(live_url, wait_until="domcontentloaded", timeout=60000)
         print("[Browser] 页面已打开，正在监听弹幕流... 按 Ctrl+C 退出")
 
         try:
             await asyncio.Future()
         finally:
-            await context.close()
+            if remote_browser is not None:
+                # 仅关闭本次新建的直播间标签页，不关闭用户 Mac 上的 Chrome 主窗口
+                try:
+                    await page.close()
+                except Exception:
+                    pass
+            else:
+                await context.close()
             await ws_server.stop()
 
 

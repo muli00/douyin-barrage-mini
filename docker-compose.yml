@@ -15,6 +15,8 @@ services:
       - WS_HOST=0.0.0.0
       - WS_PORT=8888
       - HEADLESS=true
+      # 方式 A：连接宿主机 Mac 可视 Chrome 的 CDP 地址（置空则回退为容器内部无头 Chromium）
+      - CDP_URL=${CDP_URL:-http://host.docker.internal:9222}
       # AI 助播配置（也可写在项目根目录的 .env 文件中）
       - AI_ENABLED=${AI_ENABLED:-false}
       - DRY_RUN=${DRY_RUN:-true}

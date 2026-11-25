@@ -24,28 +24,34 @@ douyin-barrage-mini/
 └── test_verify.py            # 全链路自测脚本
 ```
 
-## 快速启动（仅抓弹幕）
+## 快速启动（仅抓弹幕，无需开 Mac Chrome）
 
 ```bash
 cd ~/douyin-barrage-mini
-LIVE_URL="https://live.douyin.com/你的直播间号" docker compose up --build
+CDP_URL="" LIVE_URL="https://live.douyin.com/你的直播间号" docker compose up --build
 ```
 
 - 默认**只输出聊天弹幕**（`ONLY_CHAT=true`）；如需输出进房、点赞、礼物等全部消息，加上 `ONLY_CHAT=false`。
 - `--build`（全称 **Build**）：启动前检查 `Dockerfile` 并构建镜像。
 
-## 开启 AI 助播（方法一：`cookies.json` 登录）
+## 开启 AI 助播（方式 A：Docker 直连 Mac 独立可视 Chrome）
 
-1. **配置环境变量**：复制 `.env.example` 为 `.env`，填入你的大模型 `LLM_API_KEY`、`LIVE_URL` 和助播小号昵称 `BOT_NICKNAME`。
-2. **编写知识库**：按你的直播间实际情况修改 `knowledge.txt`。
-3. **导出登录 Cookie**：
-   - 在 Mac 的 Chrome 浏览器中登录你的助播抖音小号并打开 `https://live.douyin.com/`；
-   - 使用 Chrome 扩展（如 `Cookie-Editor`）导出 JSON 格式 Cookie，保存为项目根目录下的 `cookies.json`（已被 `.gitignore` 忽略）。
-4. **先用演习模式试车**（`.env` 默认 `DRY_RUN=true`，AI 只打印回复内容，不真发）：
+1. **打开 Mac 独立助播 Chrome 窗口并扫码登录**：
+   在第一个终端窗口运行（会弹出一个独立的 Chrome 窗口，与你平时用的 Chrome 完全隔离）：
    ```bash
+   cd ~/douyin-barrage-mini
+   bash start_mac_chrome.sh
+   ```
+   在弹出的窗口中手动扫码登录你的**助播抖音小号**（登录态自动保存在 `mac_chrome_profile/` 中，以后长期复用；运行期间保持该窗口开启即可）。
+2. **配置环境变量**：复制 `.env.example` 为 `.env`，填入你的大模型 `LLM_API_KEY`、`LIVE_URL` 和助播小号昵称 `BOT_NICKNAME`。
+3. **编写知识库**：按你的直播间实际情况修改 `knowledge.txt`。
+4. **启动容器直连 Mac Chrome**：
+   另开一个终端标签页（`Command + T`），运行：
+   ```bash
+   cd ~/douyin-barrage-mini
    docker compose up
    ```
-5. **正式上线**：确认 AI 回复质量和频率满意后，把 `.env` 里的 `DRY_RUN=false` 即可自动在直播间公屏回复。
+   （演习模式 `DRY_RUN=true` 只打印回复不真发；确认满意后在 `.env` 设为 `DRY_RUN=false` 即可正式在公屏自动回复。）
 
 ## 停止与自测
 
