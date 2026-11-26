@@ -5,33 +5,13 @@ services:
       - .:/app
     ports:
       - "8888:8888"
+      - "8889:8889"
     # 给 Chromium 分配足够的共享内存，防止在 Docker 中页面崩溃
     shm_size: "1gb"
     environment:
-      # 替换成你要抓取的抖音直播间地址
-      - LIVE_URL=${LIVE_URL:-https://live.douyin.com/}
-      # true = 只输出聊天弹幕；false = 输出全部消息（含进房/点赞/礼物/关注/在线人数）
-      - ONLY_CHAT=${ONLY_CHAT:-true}
-      - WS_HOST=0.0.0.0
+      - TZ=Asia/Shanghai
       - WS_PORT=8888
-      - HEADLESS=true
-      # 连接宿主机 Mac 可视 Chrome 的 CDP 地址（置空则回退为容器内部无头 Chromium）
+      - WEB_PORT=8889
       - CDP_URL=${CDP_URL:-http://host.docker.internal:9222}
-      # AI 公屏助播配置（也可写在项目根目录的 .env 文件中）
-      - AI_ENABLED=${AI_ENABLED:-false}
-      - TEXT_REPLY_ENABLED=${TEXT_REPLY_ENABLED:-true}
-      - DRY_RUN=${DRY_RUN:-true}
-      - LLM_BASE_URL=${LLM_BASE_URL:-https://api.deepseek.com}
-      - LLM_API_KEY=${LLM_API_KEY:-}
-      - LLM_MODEL=${LLM_MODEL:-deepseek-chat}
-      - BOT_NICKNAME=${BOT_NICKNAME:-}
-      - REPLY_COOLDOWN=${REPLY_COOLDOWN:-12}
-      - BANNED_WORDS=${BANNED_WORDS:-最便宜,全网第一,绝对,微信,加V,私信我}
-      # AI 语音讲品与插播答疑配置
-      - VOICE_ENABLED=${VOICE_ENABLED:-false}
-      - VOICE_PITCH_ENABLED=${VOICE_PITCH_ENABLED:-true}
-      - VOICE_QA_ENABLED=${VOICE_QA_ENABLED:-true}
-      - TTS_VOICE=${TTS_VOICE:-zh-CN-XiaoxiaoNeural}
-      - TTS_RATE=${TTS_RATE:-+8%}
     stdin_open: true
     tty: true

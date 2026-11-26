@@ -3,55 +3,91 @@ import os
 import re
 import time
 from pathlib import Path
-from typing import Dict, Optional
+from typing import Any, Dict, Optional
 
 from openai import AsyncOpenAI
 
 
 class AIAssistant:
-    """直播间 AI 助播大脑：支持公屏文字回复、语音口播答疑双通道生成及商品口播稿生成。"""
+    """直播间 AI 助播大脑：支持动态热更新配置、双通道答疑生成与商品口播稿生成。"""
 
-    def __init__(self, knowledge_path: str = "knowledge.txt") -> None:
-        self.enabled = os.getenv("AI_ENABLED", "false").lower() in ("1", "true", "yes")
-        self.text_reply_enabled = os.getenv("TEXT_REPLY_ENABLED", "true").lower() in (
-            "1",
-            "true",
-            "yes",
-        )
-        self.dry_run = os.getenv("DRY_RUN", "true").lower() in ("1", "true", "yes")
-        self.api_key = os.getenv("LLM_API_KEY", "").strip()
-        self.base_url = os.getenv("LLM_BASE_URL", "https://api.deepseek.com").strip()
-        self.model = os.getenv("LLM_MODEL", "deepseek-chat").strip()
-        self.bot_nickname = os.getenv("BOT_NICKNAME", "").strip()
-        self.cooldown = float(os.getenv("REPLY_COOLDOWN", "12"))
-        self.banned_words = [
-            w.strip()
-            for w in os.getenv("BANNED_WORDS", "最便宜,全网第一,微信,加V").split(",")
-            if w.strip()
-        ]
-
+    def __init__(
+        self,
+        knowledge_path: str = "knowledge.txt",
+        config: Optional[Dict[str, Any]] = None,
+    ) -> None:
         self.knowledge_path = Path(knowledge_path)
         self._last_reply_ts: float = 0.0
         self._busy: bool = False
         self.client: Optional[AsyncOpenAI] = None
 
-        if self.enabled:
-            if not self.api_key:
-                print("[AI] 已开启 AI_ENABLED，但未填写 LLM_API_KEY，AI 助播暂不生效。")
-                self.enabled = False
-            else:
-                self.client = AsyncOpenAI(
-                    api_key=self.api_key,
-                    base_url=self.base_url,
-                )
-                mode = (
-                    "演习模式 (DRY_RUN=true，公屏不真发)"
-                    if self.dry_run
-                    else "正式发送模式 (DRY_RUN=false)"
-                )
-                print(
-                    f"[AI] 助播已就绪 | 模型: {self.model} | 冷却: {self.cooldown}s | {mode}"
-                )
+        self.enabled: bool = False
+        self.text_reply_enabled: bool = True
+        self.dry_run: bool = True
+        self.api_key: str = ""
+        self.base_url: str = "https://api.deepseek.com"
+        self.model: str = "deepseek-chat"
+        self.bot_nickname: str = ""
+        self.cooldown: float = 12.0
+        self.banned_words: list[str] = []
+
+        if config is not None:
+            self.apply_config(config)
+        else:
+            self.apply_config(
+                {
+                    "ai_enabled": os.getenv("AI_ENABLED", "false").lower()
+                    in ("1", "true", "yes"),
+                    "text_reply_enabled": os.getenv(
+                        "TEXT_REPLY_ENABLED", "true"
+                    ).lower()
+                    in ("1", "true", "yes"),
+                    "dry_run": os.getenv("DRY_RUN", "true").lower()
+                    in ("1", "true", "yes"),
+                    "llm_api_key": os.getenv("LLM_API_KEY", ""),
+                    "llm_base_url": os.getenv(
+                        "LLM_BASE_URL", "https://api.deepseek.com"
+                    ),
+                    "llm_model": os.getenv("LLM_MODEL", "deepseek-chat"),
+                    "bot_nickname": os.getenv("BOT_NICKNAME", ""),
+                    "reply_cooldown": float(os.getenv("REPLY_COOLDOWN", "12")),
+                    "banned_words": os.getenv(
+                        "BANNED_WORDS", "最便宜,全网第一,微信,加V"
+                    ),
+                }
+            )
+
+    def apply_config(self, cfg: Dict[str, Any]) -> None:
+        """从配置字典热刷新参数与 OpenAI 客户端，无需重启进程。"""
+        self.enabled = bool(cfg.get("ai_enabled", False))
+        self.text_reply_enabled = bool(cfg.get("text_reply_enabled", True))
+        self.dry_run = bool(cfg.get("dry_run", True))
+        new_key = str(cfg.get("llm_api_key", "") or "").strip()
+        new_url = str(
+            cfg.get("llm_base_url", "https://api.deepseek.com") or ""
+        ).strip()
+        self.model = str(cfg.get("llm_model", "deepseek-chat") or "").strip()
+        self.bot_nickname = str(cfg.get("bot_nickname", "") or "").strip()
+        self.cooldown = float(cfg.get("reply_cooldown", 12.0))
+        raw_banned = cfg.get("banned_words", "最便宜,全网第一,微信,加V")
+        if isinstance(raw_banned, list):
+            self.banned_words = [str(w).strip() for w in raw_banned if str(w).strip()]
+        else:
+            self.banned_words = [
+                w.strip() for w in str(raw_banned).split(",") if w.strip()
+            ]
+
+        if new_key != self.api_key or new_url != self.base_url or self.client is None:
+            self.api_key = new_key
+            self.base_url = new_url
+            self.client = (
+                AsyncOpenAI(api_key=self.api_key, base_url=self.base_url)
+                if self.api_key
+                else None
+            )
+
+        if self.enabled and not self.api_key:
+            print("[AI] 已开启 AI_ENABLED，但尚未配置 LLM_API_KEY（可在网页右上角设置中填写）。")
 
     def load_knowledge(self) -> str:
         if self.knowledge_path.exists():
@@ -175,7 +211,7 @@ class AIAssistant:
         """根据抓取到的商品页文本和补充卖点，生成短句口播讲解稿与知识库条目。"""
         if not self.client:
             if not self.api_key:
-                raise RuntimeError("尚未配置 LLM_API_KEY，无法调用 AI 生成讲解稿。")
+                raise RuntimeError("尚未配置 LLM_API_KEY，请先在右上角「系统设置」中填写 API Key。")
             self.client = AsyncOpenAI(api_key=self.api_key, base_url=self.base_url)
 
         banned_str = "、".join(self.banned_words) if self.banned_words else "无"

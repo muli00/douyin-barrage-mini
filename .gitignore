@@ -2,9 +2,11 @@ __pycache__/
 *.pyc
 chrome_profile/
 mac_chrome_profile/
+browser_profile/
 audio_out/
 .DS_Store
 .env
+config.json
 cookies.json
 debug_send.png
 login_qrcode.png
