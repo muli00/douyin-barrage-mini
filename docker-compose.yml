@@ -15,10 +15,11 @@ services:
       - WS_HOST=0.0.0.0
       - WS_PORT=8888
       - HEADLESS=true
-      # 方式 A：连接宿主机 Mac 可视 Chrome 的 CDP 地址（置空则回退为容器内部无头 Chromium）
+      # 连接宿主机 Mac 可视 Chrome 的 CDP 地址（置空则回退为容器内部无头 Chromium）
       - CDP_URL=${CDP_URL:-http://host.docker.internal:9222}
-      # AI 助播配置（也可写在项目根目录的 .env 文件中）
+      # AI 公屏助播配置（也可写在项目根目录的 .env 文件中）
       - AI_ENABLED=${AI_ENABLED:-false}
+      - TEXT_REPLY_ENABLED=${TEXT_REPLY_ENABLED:-true}
       - DRY_RUN=${DRY_RUN:-true}
       - LLM_BASE_URL=${LLM_BASE_URL:-https://api.deepseek.com}
       - LLM_API_KEY=${LLM_API_KEY:-}
@@ -26,5 +27,11 @@ services:
       - BOT_NICKNAME=${BOT_NICKNAME:-}
       - REPLY_COOLDOWN=${REPLY_COOLDOWN:-12}
       - BANNED_WORDS=${BANNED_WORDS:-最便宜,全网第一,绝对,微信,加V,私信我}
+      # AI 语音讲品与插播答疑配置
+      - VOICE_ENABLED=${VOICE_ENABLED:-false}
+      - VOICE_PITCH_ENABLED=${VOICE_PITCH_ENABLED:-true}
+      - VOICE_QA_ENABLED=${VOICE_QA_ENABLED:-true}
+      - TTS_VOICE=${TTS_VOICE:-zh-CN-XiaoxiaoNeural}
+      - TTS_RATE=${TTS_RATE:-+8%}
     stdin_open: true
     tty: true

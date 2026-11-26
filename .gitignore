@@ -2,6 +2,7 @@ __pycache__/
 *.pyc
 chrome_profile/
 mac_chrome_profile/
+audio_out/
 .DS_Store
 .env
 cookies.json

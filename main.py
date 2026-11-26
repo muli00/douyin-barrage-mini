@@ -79,6 +79,7 @@ async def run() -> None:
     from ai_assistant import AIAssistant
     from decoder import decode_frame
     from sender import BarrageSender, inject_cookies_if_exists
+    from voice_speaker import VoiceSpeaker
     from ws_server import LocalWSServer
 
     raw_live_url = (
@@ -101,8 +102,10 @@ async def run() -> None:
     print(f"[Filter] 当前模式: {mode_text}")
 
     ai_assistant = AIAssistant(knowledge_path="knowledge.txt")
+    voice_speaker = VoiceSpeaker(pitch_path="pitch.txt", audio_dir="audio_out")
     ws_server = LocalWSServer(host=ws_host, port=ws_port)
     await ws_server.start()
+    voice_speaker.start()
 
     barrage_ws_ids: set[str] = set()
 
@@ -114,6 +117,7 @@ async def run() -> None:
                 print(f"[CDP] 正在连接宿主机可视 Chrome: {ws_endpoint}")
                 remote_browser = await p.chromium.connect_over_cdp(ws_endpoint)
             except Exception as exc:
+                await voice_speaker.stop()
                 await ws_server.stop()
                 raise RuntimeError(
                     f"无法连接 Mac Chrome ({cdp_url})，请先在 Mac 终端运行 `bash start_mac_chrome.sh` 打开独立浏览器窗口！原始错误: {exc}"
@@ -146,17 +150,34 @@ async def run() -> None:
         sender = BarrageSender(page)
 
         async def handle_ai_reply(msg: dict) -> None:
-            reply = await ai_assistant.generate_reply(
-                msg["nickname"], msg["content"]
+            need_text = ai_assistant.text_reply_enabled
+            need_voice = voice_speaker.enabled and voice_speaker.qa_enabled
+            dual = await ai_assistant.generate_dual_reply(
+                msg["nickname"],
+                msg["content"],
+                need_text=need_text,
+                need_voice=need_voice,
             )
-            if not reply:
+            if not dual:
                 return
-            if ai_assistant.dry_run:
+
+            # 通道 1：高优先级插播语音开口答疑
+            if need_voice and dual.get("voice_reply"):
                 print(
-                    f"[AI 演习回复] 针对「{msg['nickname']}: {msg['content']}」-> {reply}"
+                    f"[AI 语音插播入队] 回复 @{msg['nickname']} -> {dual['voice_reply']}"
                 )
-            else:
-                await sender.send(reply)
+                await voice_speaker.enqueue_qa(
+                    msg["nickname"], msg["content"], dual["voice_reply"]
+                )
+
+            # 通道 2：助播小号同时在公屏打字回复
+            if need_text and dual.get("text_reply"):
+                if ai_assistant.dry_run:
+                    print(
+                        f"[AI 公屏演习] 针对「{msg['nickname']}: {msg['content']}」-> {dual['text_reply']}"
+                    )
+                else:
+                    await sender.send(dual["text_reply"])
 
         cdp = await context.new_cdp_session(page)
         await cdp.send("Network.enable")
@@ -188,22 +209,33 @@ async def run() -> None:
         cdp.on("Network.webSocketCreated", on_ws_created)
         cdp.on("Network.webSocketFrameReceived", on_ws_frame_received)
 
-        browser_desc = "Mac 可视 Chrome (CDP)" if cdp_url else f"容器内置 Chromium (headless={headless})"
+        browser_desc = (
+            "Mac 可视 Chrome (CDP)"
+            if cdp_url
+            else f"容器内置 Chromium (headless={headless})"
+        )
         print(f"[Browser] 正在使用 [{browser_desc}] 打开直播间: {live_url}")
         await page.goto(live_url, wait_until="domcontentloaded", timeout=60000)
         print("[Browser] 页面已打开，正在监听弹幕流... 按 Ctrl+C 退出")
 
+        disconnect_event = asyncio.Event()
+        page.on("close", lambda *_: disconnect_event.set())
+        if remote_browser is not None:
+            remote_browser.on("disconnected", lambda *_: disconnect_event.set())
+
         try:
-            await asyncio.Future()
+            await disconnect_event.wait()
+            print("[Browser] ⚠️ 检测到直播间标签页或 Mac Chrome 已关闭/重启！")
         finally:
             if remote_browser is not None:
-                # 仅关闭本次新建的直播间标签页，不关闭用户 Mac 上的 Chrome 主窗口
                 try:
-                    await page.close()
+                    if not page.is_closed():
+                        await page.close()
                 except Exception:
                     pass
             else:
                 await context.close()
+            await voice_speaker.stop()
             await ws_server.stop()
 
 

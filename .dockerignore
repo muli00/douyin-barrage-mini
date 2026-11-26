@@ -3,6 +3,7 @@ __pycache__/
 *.pyc
 chrome_profile/
 mac_chrome_profile/
+audio_out/
 .env
 cookies.json
 debug_send.png
